@@ -1,5 +1,5 @@
 use arrayvec::ArrayString;
-use std::{fmt, str::FromStr};
+use std::{fmt, ops, str::FromStr};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -16,7 +16,7 @@ pub enum ArnParseError {
     InvalidRegion(String),
 }
 
-#[derive(Default, PartialEq, Eq, Hash, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, PartialEq, Eq, Hash, Copy, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Arn {
     pub service: Component<ArrayString<32>>,
@@ -32,6 +32,10 @@ impl Arn {
         account: Component::Any,
         resource_id: Component::Any,
     };
+
+    pub fn builder() -> ArnBuilder {
+        ArnBuilder(Self::default())
+    }
 }
 
 impl FromStr for Arn {
@@ -141,15 +145,96 @@ impl fmt::Debug for Arn {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Hash, Clone)]
-pub enum Component<V> {
+#[derive(Debug, Clone)]
+pub struct ArnBuilder(Arn);
+
+impl ArnBuilder {
+    pub fn service<S: AsRef<str>>(mut self, service: S) -> Result<Self, ArnParseError> {
+        self.0.service = Component::new(
+            service
+                .as_ref()
+                .parse()
+                .map_err(|_| ArnParseError::ServiceTooLong)?,
+        );
+        Ok(self)
+    }
+    pub fn any_service(mut self) -> Self {
+        self.0.service = Component::Any;
+        self
+    }
+
+    pub fn region<S: AsRef<str>>(mut self, region: S) -> Result<Self, ArnParseError> {
+        self.0.region = Component::new(
+            region
+                .as_ref()
+                .parse()
+                .map_err(|_| ArnParseError::ServiceTooLong)?,
+        );
+        Ok(self)
+    }
+    pub fn any_region(mut self) -> Self {
+        self.0.region = Component::Any;
+        self
+    }
+
+    pub fn account<S: AsRef<str>>(mut self, account: S) -> Result<Self, ArnParseError> {
+        self.0.account = Component::new(
+            account
+                .as_ref()
+                .parse()
+                .map_err(|_| ArnParseError::AccountTooLong)?,
+        );
+        Ok(self)
+    }
+    pub fn any_account(mut self) -> Self {
+        self.0.account = Component::Any;
+        self
+    }
+
+    pub fn resource_id<S: AsRef<str>>(mut self, resource_id: S) -> Result<Self, ArnParseError> {
+        self.0.resource_id = Component::new(
+            resource_id
+                .as_ref()
+                .parse()
+                .map_err(|_| ArnParseError::ResourceIdTooLong)?,
+        );
+        Ok(self)
+    }
+    pub fn any_resource_id(mut self) -> Self {
+        self.0.resource_id = Component::Any;
+        self
+    }
+}
+
+impl ops::Deref for ArnBuilder {
+    type Target = Arn;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<ArnBuilder> for Arn {
+    fn from(builder: ArnBuilder) -> Self {
+        builder.0
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Hash, Copy, Clone)]
+pub enum Component<V: Copy> {
     #[default]
     None,
     Any,
     Value(V),
 }
 
-#[derive(Clone, Default, Hash, PartialEq, Eq, Debug)]
+impl<V: Copy> Component<V> {
+    pub fn new(value: V) -> Self {
+        Self::Value(value)
+    }
+}
+
+#[derive(Copy, Clone, Default, Hash, PartialEq, Eq, Debug)]
 pub enum Region {
     #[default]
     UsEast1,
@@ -491,7 +576,7 @@ mod tests {
 
         // Test that they can be used in hash-based collections
         let mut set = std::collections::HashSet::new();
-        set.insert(arn1.clone());
+        set.insert(arn1);
         assert!(set.contains(&arn2));
         assert!(!set.contains(&arn3));
     }
@@ -526,5 +611,47 @@ mod tests {
         let arn: Arn = "arn:aws:s3:us-east-1:123456789012:bucket".parse().unwrap();
         let arn_string: String = arn.into();
         assert_eq!(arn_string, "arn:aws:s3:us-east-1:123456789012:bucket");
+    }
+
+    #[test]
+    fn test_builder_service() {
+        let arn: Arn = Arn::builder().service("redshift").unwrap().into();
+        let arn_string = arn.to_string();
+        assert_eq!(arn_string, "arn:aws:redshift:::");
+    }
+
+    #[test]
+    fn test_builder_region() {
+        let arn: Arn = Arn::builder().region("us-east-1").unwrap().into();
+        let arn_string = arn.to_string();
+        assert_eq!(arn_string, "arn:aws::us-east-1::");
+    }
+
+    #[test]
+    fn test_builder_account() {
+        let arn: Arn = Arn::builder().account("123412341234").unwrap().into();
+        let arn_string = arn.to_string();
+        assert_eq!(arn_string, "arn:aws:::123412341234:");
+    }
+
+    #[test]
+    fn test_builder_account_too_long() {
+        let long_account = "1".repeat(13);
+        let result = Arn::builder().account(long_account);
+        assert!(matches!(result, Err(ArnParseError::AccountTooLong)));
+    }
+
+    #[test]
+    fn test_builder_resource_id() {
+        let arn: Arn = Arn::builder().resource_id("id").unwrap().into();
+        let arn_string = arn.to_string();
+        assert_eq!(arn_string, "arn:aws::::id");
+    }
+
+    #[test]
+    fn test_builder_deref() {
+        let arn1 = Arn::builder().region("us-east-1").unwrap();
+        let arn2: Arn = "arn:aws::us-east-1::".parse().unwrap();
+        assert_eq!(arn1.region, arn2.region);
     }
 }
